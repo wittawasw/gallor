@@ -7,7 +7,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:video_thumbnail/video_thumbnail.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -605,14 +604,16 @@ const thumbsDirName = '.thumbs';
 
 class MediaPreview {
   final String sourcePath;
-  final String thumbPath;
+  final String? thumbPath;
+  final bool isVideo;
   final int? width;
   final int? height;
   final Duration? duration;
 
   const MediaPreview({
     required this.sourcePath,
-    required this.thumbPath,
+    required this.isVideo,
+    this.thumbPath,
     this.width,
     this.height,
     this.duration,
@@ -627,6 +628,7 @@ class MediaPreviewTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = preview;
+    final thumbPath = p?.thumbPath;
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Container(
@@ -635,8 +637,10 @@ class MediaPreviewTile extends StatelessWidget {
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         child: p == null
             ? const Icon(Icons.image, size: 20)
+            : p.isVideo || thumbPath == null
+            ? const Icon(Icons.movie, size: 20)
             : Image.file(
-                File(p.thumbPath),
+                File(thumbPath),
                 fit: BoxFit.cover,
                 errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
               ),
@@ -653,26 +657,27 @@ Future<List<MediaPreview>> ensureMediaPreviews(
   if (media.isEmpty) return const <MediaPreview>[];
 
   final thumbs = Directory('${dir.path}/$thumbsDirName');
-  if (!await thumbs.exists()) await thumbs.create(recursive: true);
 
   final result = <MediaPreview>[];
   for (final file in media) {
     try {
-      final thumb = File('${thumbs.path}/${basename(file.path)}');
-      if (!await thumb.exists()) {
-        if (isVideo(file.path)) {
-          await createVideoThumb(file, thumb);
-        } else {
+      final video = isVideo(file.path);
+      File? thumb;
+      if (!video) {
+        if (!await thumbs.exists()) await thumbs.create(recursive: true);
+        thumb = File('${thumbs.path}/${basename(file.path)}');
+        if (!await thumb.exists()) {
           await createImageThumb(file, thumb);
         }
       }
-      final metadata = isVideo(file.path)
+      final metadata = video
           ? await readVideoMetadata(file)
           : await readImageMetadata(file);
       result.add(
         MediaPreview(
           sourcePath: file.path,
-          thumbPath: thumb.path,
+          isVideo: video,
+          thumbPath: thumb?.path,
           width: metadata.width,
           height: metadata.height,
           duration: metadata.duration,
@@ -683,17 +688,6 @@ Future<List<MediaPreview>> ensureMediaPreviews(
     }
   }
   return result;
-}
-
-Future<void> createVideoThumb(File source, File target) async {
-  final bytes = await VideoThumbnail.thumbnailData(
-    video: source.path,
-    imageFormat: ImageFormat.JPEG,
-    maxWidth: 320,
-    quality: 75,
-  );
-  if (bytes == null || bytes.isEmpty) return;
-  await target.writeAsBytes(bytes, flush: true);
 }
 
 Future<void> createImageThumb(File source, File target) async {
