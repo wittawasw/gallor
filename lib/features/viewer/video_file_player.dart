@@ -50,6 +50,7 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
 
     try {
       await nc.initialize();
+      await nc.setLooping(true);
       if (!mounted || token != loadToken) return;
       setState(() => ready = true);
     } catch (e) {
