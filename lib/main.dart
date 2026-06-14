@@ -482,6 +482,8 @@ class VideoFilePlayer extends StatefulWidget {
 class _VideoFilePlayerState extends State<VideoFilePlayer> {
   VideoPlayerController? c;
   bool ready = false;
+  Object? loadError;
+  int loadToken = 0;
 
   @override
   void initState() {
@@ -496,17 +498,48 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
   }
 
   Future<void> _load() async {
-    await c?.dispose();
+    final token = ++loadToken;
+    final old = c;
+    old?.removeListener(_onVideoChanged);
+    c = null;
+    if (mounted) {
+      setState(() {
+        ready = false;
+        loadError = null;
+      });
+    }
+    await old?.dispose();
+
     final nc = VideoPlayerController.file(widget.file);
+    nc.addListener(_onVideoChanged);
+    if (!mounted || token != loadToken) {
+      nc.removeListener(_onVideoChanged);
+      await nc.dispose();
+      return;
+    }
     c = nc;
-    setState(() => ready = false);
-    await nc.initialize();
-    if (!mounted) return;
-    setState(() => ready = true);
+
+    try {
+      await nc.initialize();
+      if (!mounted || token != loadToken) return;
+      setState(() => ready = true);
+    } catch (e) {
+      nc.removeListener(_onVideoChanged);
+      await nc.dispose();
+      if (!mounted || token != loadToken) return;
+      c = null;
+      setState(() => loadError = e);
+    }
+  }
+
+  void _onVideoChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    loadToken++;
+    c?.removeListener(_onVideoChanged);
     c?.dispose();
     super.dispose();
   }
@@ -514,16 +547,32 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
   @override
   Widget build(BuildContext context) {
     final vc = c;
+    if (loadError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'Could not load video',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyLarge?.copyWith(color: Colors.white),
+          ),
+        ),
+      );
+    }
     if (!ready || vc == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    return Center(
+    return SafeArea(
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          AspectRatio(
-            aspectRatio: vc.value.aspectRatio,
-            child: VideoPlayer(vc),
+          Expanded(
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: vc.value.aspectRatio,
+                child: VideoPlayer(vc),
+              ),
+            ),
           ),
           VideoProgressIndicator(
             vc,
