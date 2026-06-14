@@ -44,6 +44,7 @@ class _HomePageState extends State<HomePage> {
   String? serverUrl;
   bool loading = true;
   bool refreshingThumbs = false;
+  int directoryLoadRequest = 0;
 
   @override
   void initState() {
@@ -69,9 +70,17 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final dir = currentDir;
     if (dir == null) return;
+    final request = ++directoryLoadRequest;
+    if (!mounted) return;
+    setState(() {
+      entries = [];
+      previews.clear();
+      loading = true;
+    });
     final list = (await dir.list().toList())
         .where((e) => basename(e.path) != thumbsDirName)
         .toList();
+    if (!mounted || request != directoryLoadRequest) return;
     list.sort((a, b) {
       final ad = a is Directory ? 0 : 1;
       final bd = b is Directory ? 0 : 1;
@@ -79,7 +88,7 @@ class _HomePageState extends State<HomePage> {
       return a.path.toLowerCase().compareTo(b.path.toLowerCase());
     });
     final generated = await ensureMediaPreviews(dir, list.whereType<File>());
-    if (!mounted) return;
+    if (!mounted || request != directoryLoadRequest) return;
     selected.removeWhere((p) => !list.any((e) => e.path == p));
     setState(() {
       entries = list;
