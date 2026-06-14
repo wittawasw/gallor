@@ -42,6 +42,8 @@ class _HomePageState extends State<HomePage> {
   Directory? currentDir;
   List<FileSystemEntity> entries = [];
   final Map<String, MediaPreview> previews = <String, MediaPreview>{};
+  final Map<String, DirectoryCacheEntry> directoryCache =
+      <String, DirectoryCacheEntry>{};
   final Set<String> selected = <String>{};
   HttpServer? server;
   String? serverUrl;
@@ -66,38 +68,61 @@ class _HomePageState extends State<HomePage> {
     final root = Directory('${docs.path}/vault');
     if (!await root.exists()) await root.create(recursive: true);
     rootDir = root;
-    currentDir = root;
-    await _refresh();
+    await _openDirectory(root);
   }
 
   Future<void> _refresh() async {
     final dir = currentDir;
     if (dir == null) return;
+    directoryCache.remove(dir.path);
+    await _openDirectory(dir, force: true);
+  }
+
+  Future<void> _openDirectory(Directory dir, {bool force = false}) async {
     final request = ++directoryLoadRequest;
+    currentDir = dir;
+    selected.clear();
+    if (!force) {
+      final cached = directoryCache[dir.path];
+      if (cached != null) {
+        _showDirectoryCache(cached);
+        return;
+      }
+    }
     if (!mounted) return;
     setState(() {
       entries = [];
       previews.clear();
       loading = true;
     });
-    final list = (await dir.list().toList())
+    final scannedEntries = (await dir.list().toList())
         .where((e) => basename(e.path) != thumbsDirName)
         .toList();
     if (!mounted || request != directoryLoadRequest) return;
-    list.sort((a, b) {
-      final ad = a is Directory ? 0 : 1;
-      final bd = b is Directory ? 0 : 1;
-      if (ad != bd) return ad.compareTo(bd);
-      return a.path.toLowerCase().compareTo(b.path.toLowerCase());
-    });
-    final generated = await ensureMediaPreviews(dir, list.whereType<File>());
+    sortEntries(scannedEntries);
+    final generated = await ensureMediaPreviews(
+      dir,
+      scannedEntries.whereType<File>(),
+    );
     if (!mounted || request != directoryLoadRequest) return;
-    selected.removeWhere((p) => !list.any((e) => e.path == p));
+    final scannedPreviews = {
+      for (final preview in generated) preview.sourcePath: preview,
+    };
+    final cache = DirectoryCacheEntry(
+      entries: scannedEntries,
+      previews: scannedPreviews,
+    );
+    directoryCache[dir.path] = cache;
+    _showDirectoryCache(cache);
+  }
+
+  void _showDirectoryCache(DirectoryCacheEntry cache) {
+    selected.removeWhere((p) => !cache.entries.any((e) => e.path == p));
     setState(() {
-      entries = list;
+      entries = List<FileSystemEntity>.of(cache.entries);
       previews
         ..clear()
-        ..addEntries(generated.map((p) => MapEntry(p.sourcePath, p)));
+        ..addAll(cache.previews);
       loading = false;
     });
   }
@@ -109,7 +134,8 @@ class _HomePageState extends State<HomePage> {
     try {
       final thumbs = Directory('${dir.path}/$thumbsDirName');
       if (await thumbs.exists()) await thumbs.delete(recursive: true);
-      await _refresh();
+      directoryCache.remove(dir.path);
+      await _openDirectory(dir, force: true);
     } finally {
       if (mounted) setState(() => refreshingThumbs = false);
     }
@@ -119,6 +145,61 @@ class _HomePageState extends State<HomePage> {
       .whereType<File>()
       .where((f) => isImage(f.path) || isVideo(f.path))
       .toList();
+
+  void _addEntriesToCache(Directory dir, List<FileSystemEntity> newEntries) {
+    if (newEntries.isEmpty) return;
+    final cache = _cacheForMutation(dir);
+    if (cache == null) return;
+    final paths = newEntries.map((e) => e.path).toSet();
+    cache.entries.removeWhere((e) => paths.contains(e.path));
+    cache.entries.addAll(newEntries);
+    sortEntries(cache.entries);
+    if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
+  }
+
+  Future<void> _addFilesToCache(Directory dir, List<File> files) async {
+    if (files.isEmpty) return;
+    final generated = await ensureMediaPreviews(dir, files);
+    final cache = _cacheForMutation(dir);
+    if (cache == null) return;
+    final paths = files.map((f) => f.path).toSet();
+    cache.entries.removeWhere((e) => paths.contains(e.path));
+    cache.entries.addAll(files);
+    sortEntries(cache.entries);
+    for (final preview in generated) {
+      cache.previews[preview.sourcePath] = preview;
+    }
+    if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
+  }
+
+  DirectoryCacheEntry? _cacheForMutation(Directory dir) {
+    final cached = directoryCache[dir.path];
+    if (cached != null) return cached;
+    if (currentDir?.path != dir.path) return null;
+    return directoryCache[dir.path] = DirectoryCacheEntry(
+      entries: entries,
+      previews: previews,
+    );
+  }
+
+  void _removeEntriesFromCache(Directory dir, List<String> paths) {
+    if (paths.isEmpty) return;
+    final cache = directoryCache[dir.path];
+    if (cache == null) return;
+    final deleted = paths.toSet();
+    cache.entries.removeWhere((e) => deleted.contains(e.path));
+    for (final path in deleted) {
+      cache.previews.remove(path);
+    }
+    if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
+  }
+
+  void _removeDirectoryCaches(String deletedPath) {
+    final prefix = '$deletedPath/';
+    directoryCache.removeWhere(
+      (path, _) => path == deletedPath || path.startsWith(prefix),
+    );
+  }
 
   Future<void> _createDirectory() async {
     final name = await showDialog<String>(
@@ -147,8 +228,10 @@ class _HomePageState extends State<HomePage> {
     );
     if (name == null || name.isEmpty) return;
     final safe = sanitizeFileName(name);
-    await Directory('${currentDir!.path}/$safe').create(recursive: true);
-    await _refresh();
+    final created = await Directory(
+      '${currentDir!.path}/$safe',
+    ).create(recursive: true);
+    _addEntriesToCache(currentDir!, [created]);
   }
 
   Future<void> _deletePaths(List<String> paths) async {
@@ -171,28 +254,30 @@ class _HomePageState extends State<HomePage> {
       ),
     );
     if (yes != true) return;
+    final deleted = <String>[];
     for (final p in paths) {
       final type = await FileSystemEntity.type(p);
       if (type == FileSystemEntityType.directory) {
         await Directory(p).delete(recursive: true);
+        _removeDirectoryCaches(p);
+        deleted.add(p);
       } else if (type == FileSystemEntityType.file) {
         final thumb = File(
           '${File(p).parent.path}/$thumbsDirName/${basename(p)}',
         );
         if (await thumb.exists()) await thumb.delete();
         await File(p).delete();
+        deleted.add(p);
       }
     }
     selected.clear();
-    await _refresh();
+    _removeEntriesFromCache(currentDir!, deleted);
   }
 
   Future<void> _goUp() async {
     if (rootDir == null || currentDir == null) return;
     if (currentDir!.path == rootDir!.path) return;
-    currentDir = currentDir!.parent;
-    selected.clear();
-    await _refresh();
+    await _openDirectory(currentDir!.parent);
   }
 
   Future<void> _toggleServer() async {
@@ -216,8 +301,11 @@ class _HomePageState extends State<HomePage> {
 
     unawaited(() async {
       await for (final req in s) {
+        final uploadDir = currentDir!;
         try {
-          await handleHttpRequest(req, currentDir!, _refresh);
+          await handleHttpRequest(req, uploadDir, (files) async {
+            await _addFilesToCache(uploadDir, files);
+          });
         } catch (e) {
           req.response.statusCode = 500;
           req.response.write('Error: $e');
@@ -231,19 +319,21 @@ class _HomePageState extends State<HomePage> {
     final files = mediaFiles;
     final index = files.indexWhere((f) => f.path == file.path);
     if (index < 0) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => MediaViewerPage(
-          files: files,
-          initialIndex: index,
-          onDelete: (f) async {
-            await _deletePaths([f.path]);
-            return mediaFiles;
-          },
+    unawaited(
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => MediaViewerPage(
+            files: files,
+            initialIndex: index,
+            onDelete: (f) async {
+              await _deletePaths([f.path]);
+              return mediaFiles;
+            },
+          ),
         ),
       ),
-    ).then((_) => _refresh());
+    );
   }
 
   @override
@@ -377,9 +467,7 @@ class _HomePageState extends State<HomePage> {
                                   return;
                                 }
                                 if (isDir) {
-                                  currentDir = e;
-                                  selected.clear();
-                                  await _refresh();
+                                  await _openDirectory(e);
                                 } else if (isMedia) {
                                   _openViewer(e);
                                 }
@@ -614,6 +702,17 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
 
 const thumbsDirName = '.thumbs';
 
+class DirectoryCacheEntry {
+  final List<FileSystemEntity> entries;
+  final Map<String, MediaPreview> previews;
+
+  DirectoryCacheEntry({
+    required List<FileSystemEntity> entries,
+    required Map<String, MediaPreview> previews,
+  }) : entries = List<FileSystemEntity>.of(entries),
+       previews = Map<String, MediaPreview>.of(previews);
+}
+
 class MediaPreview {
   final String sourcePath;
   final String? thumbPath;
@@ -799,7 +898,7 @@ String formatDuration(Duration duration) {
 Future<void> handleHttpRequest(
   HttpRequest req,
   Directory uploadDir,
-  Future<void> Function() onUploaded,
+  Future<void> Function(List<File> files) onUploaded,
 ) async {
   req.response.headers.set('Access-Control-Allow-Origin', '*');
   if (req.method == 'GET') {
@@ -821,10 +920,10 @@ Future<void> handleHttpRequest(
 
     final bytes = await collectBytes(req);
     final saved = await parseAndSaveMultipart(bytes, boundary, uploadDir);
-    await onUploaded();
+    await onUploaded(saved);
     req.response.headers.contentType = ContentType.html;
     req.response.write(
-      '<p>Uploaded $saved file(s).</p><p><a href="/">Back</a></p>',
+      '<p>Uploaded ${saved.length} file(s).</p><p><a href="/">Back</a></p>',
     );
     await req.response.close();
     return;
@@ -859,14 +958,14 @@ Future<Uint8List> collectBytes(Stream<List<int>> stream) async {
   return builder.takeBytes();
 }
 
-Future<int> parseAndSaveMultipart(
+Future<List<File>> parseAndSaveMultipart(
   Uint8List body,
   String boundary,
   Directory dir,
 ) async {
   final marker = ascii.encode('--$boundary');
   final parts = splitBytes(body, marker);
-  var count = 0;
+  final saved = <File>[];
   for (final part in parts) {
     if (part.length < 10) continue;
     final headerEnd = indexOfBytes(part, Uint8List.fromList([13, 10, 13, 10]));
@@ -888,10 +987,11 @@ Future<int> parseAndSaveMultipart(
     if (data.isEmpty) continue;
 
     final filename = uniqueFileName(dir, sanitizeFileName(rawName));
-    await File('${dir.path}/$filename').writeAsBytes(data, flush: true);
-    count++;
+    final file = File('${dir.path}/$filename');
+    await file.writeAsBytes(data, flush: true);
+    saved.add(file);
   }
-  return count;
+  return saved;
 }
 
 List<Uint8List> splitBytes(Uint8List data, List<int> marker) {
@@ -931,6 +1031,15 @@ String uniqueFileName(Directory dir, String name) {
     n++;
   }
   return candidate;
+}
+
+void sortEntries(List<FileSystemEntity> entries) {
+  entries.sort((a, b) {
+    final ad = a is Directory ? 0 : 1;
+    final bd = b is Directory ? 0 : 1;
+    if (ad != bd) return ad.compareTo(bd);
+    return a.path.toLowerCase().compareTo(b.path.toLowerCase());
+  });
 }
 
 String sanitizeFileName(String name) {
