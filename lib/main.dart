@@ -790,6 +790,13 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _togglePlayback() async {
+    final vc = c;
+    if (!ready || vc == null) return;
+    vc.value.isPlaying ? await vc.pause() : await vc.play();
+    if (mounted) setState(() {});
+  }
+
   @override
   void dispose() {
     loadToken++;
@@ -821,10 +828,14 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
       child: Column(
         children: [
           Expanded(
-            child: Center(
-              child: AspectRatio(
-                aspectRatio: vc.value.aspectRatio,
-                child: VideoPlayer(vc),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _togglePlayback,
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: vc.value.aspectRatio,
+                  child: VideoPlayer(vc),
+                ),
               ),
             ),
           ),
@@ -842,10 +853,7 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
                 icon: Icon(
                   vc.value.isPlaying ? Icons.pause_circle : Icons.play_circle,
                 ),
-                onPressed: () async {
-                  vc.value.isPlaying ? await vc.pause() : await vc.play();
-                  setState(() {});
-                },
+                onPressed: _togglePlayback,
               ),
             ],
           ),
