@@ -37,6 +37,7 @@ dependencies:
   video_player: ^2.11.1
   path_provider: ^2.1.5
   fc_native_video_thumbnail: ^3.0.1
+  pdfx: ^2.9.2
 
 dev_dependencies:
   flutter_test:

@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:fc_native_video_thumbnail/fc_native_video_thumbnail.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pdfx/pdfx.dart';
 import 'package:video_player/video_player.dart';
 
 void main() {
@@ -214,10 +215,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  List<File> get mediaFiles => entries
-      .whereType<File>()
-      .where((f) => isImage(f.path) || isVideo(f.path))
-      .toList();
+  List<File> get mediaFiles =>
+      entries.whereType<File>().where((f) => isMediaFile(f.path)).toList();
 
   void _addEntriesToCache(Directory dir, List<FileSystemEntity> newEntries) {
     if (newEntries.isEmpty) return;
@@ -421,7 +420,7 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _openEntry(FileSystemEntity e) async {
     final isDir = e is Directory;
-    final isMedia = e is File && (isImage(e.path) || isVideo(e.path));
+    final isMedia = e is File && isMediaFile(e.path);
     final checked = selected.contains(e.path);
     if (selected.isNotEmpty) {
       _toggleSelected(e.path);
@@ -438,6 +437,7 @@ class _HomePageState extends State<HomePage> {
 
   String _entrySubtitle(FileSystemEntity e, MediaPreview? preview) {
     if (e is Directory) return 'Directory';
+    if (isPdf(e.path)) return pdfSubtitle(preview);
     if (isVideo(e.path)) return videoSubtitle(preview);
     if (isImage(e.path)) return imageSubtitle(preview);
     return 'File';
@@ -536,7 +536,7 @@ class _HomePageState extends State<HomePage> {
         final e = entries[i];
         final name = basename(e.path);
         final isDir = e is Directory;
-        final isMedia = e is File && (isImage(e.path) || isVideo(e.path));
+        final isMedia = e is File && isMediaFile(e.path);
         final preview = previews[e.path];
         final checked = selected.contains(e.path);
         return ListTile(
@@ -602,7 +602,7 @@ class _HomePageState extends State<HomePage> {
             itemCount: files.length,
             itemBuilder: (context, i) {
               final e = files[i];
-              final isMedia = isImage(e.path) || isVideo(e.path);
+              final isMedia = isMediaFile(e.path);
               final preview = previews[e.path];
               final checked = selected.contains(e.path);
               final colorScheme = Theme.of(context).colorScheme;
@@ -714,6 +714,7 @@ class MediaPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (isPdf(file.path)) return PdfFileViewer(file: file);
     if (isVideo(file.path)) return VideoFilePlayer(file: file);
     return Center(
       child: InteractiveViewer(
@@ -722,6 +723,47 @@ class MediaPage extends StatelessWidget {
         child: Image.file(file, fit: BoxFit.contain),
       ),
     );
+  }
+}
+
+class PdfFileViewer extends StatefulWidget {
+  final File file;
+  const PdfFileViewer({super.key, required this.file});
+
+  @override
+  State<PdfFileViewer> createState() => _PdfFileViewerState();
+}
+
+class _PdfFileViewerState extends State<PdfFileViewer> {
+  late PdfControllerPinch controller;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = _createController();
+  }
+
+  @override
+  void didUpdateWidget(covariant PdfFileViewer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.file.path == widget.file.path) return;
+    controller.dispose();
+    controller = _createController();
+  }
+
+  PdfControllerPinch _createController() {
+    return PdfControllerPinch(document: PdfDocument.openFile(widget.file.path));
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PdfViewPinch(controller: controller);
   }
 }
 
@@ -907,37 +949,45 @@ class MediaPreview {
   final String sourcePath;
   final String? thumbPath;
   final bool isVideo;
+  final bool isPdf;
   final int? width;
   final int? height;
   final Duration? duration;
+  final int? pageCount;
 
   const MediaPreview({
     required this.sourcePath,
     required this.isVideo,
+    this.isPdf = false,
     this.thumbPath,
     this.width,
     this.height,
     this.duration,
+    this.pageCount,
   });
 
   factory MediaPreview.fromJson(Map<String, dynamic> json) => MediaPreview(
     sourcePath: json['sourcePath']?.toString() ?? '',
     isVideo: json['isVideo'] == true,
+    isPdf: json['isPdf'] == true,
     thumbPath: json['thumbPath']?.toString(),
     width: json['width'] is int ? json['width'] as int : null,
     height: json['height'] is int ? json['height'] as int : null,
     duration: json['durationMs'] is int
         ? Duration(milliseconds: json['durationMs'] as int)
         : null,
+    pageCount: json['pageCount'] is int ? json['pageCount'] as int : null,
   );
 
   Map<String, dynamic> toJson() => {
     'sourcePath': sourcePath,
     'thumbPath': thumbPath,
     'isVideo': isVideo,
+    'isPdf': isPdf,
     'width': width,
     'height': height,
     'durationMs': duration?.inMilliseconds,
+    'pageCount': pageCount,
   };
 }
 
@@ -960,7 +1010,7 @@ class MediaPreviewTile extends StatelessWidget {
         child: p == null
             ? const Icon(Icons.image, size: 20)
             : thumbPath == null
-            ? const Icon(Icons.movie, size: 20)
+            ? Icon(p.isPdf ? Icons.picture_as_pdf : Icons.movie, size: 20)
             : Stack(
                 fit: StackFit.expand,
                 children: [
@@ -977,6 +1027,31 @@ class MediaPreviewTile extends StatelessWidget {
                         size: 20,
                       ),
                     ),
+                  if (p.isPdf)
+                    const Positioned(
+                      right: 4,
+                      bottom: 4,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.all(Radius.circular(3)),
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 4,
+                            vertical: 2,
+                          ),
+                          child: Text(
+                            'PDF',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
       ),
@@ -988,7 +1063,7 @@ Future<List<MediaPreview>> ensureMediaPreviews(
   Directory dir,
   Iterable<File> files,
 ) async {
-  final media = files.where((f) => isImage(f.path) || isVideo(f.path)).toList();
+  final media = files.where((f) => isMediaFile(f.path)).toList();
   if (media.isEmpty) return const <MediaPreview>[];
 
   final thumbs = Directory('${dir.path}/$thumbsDirName');
@@ -998,10 +1073,13 @@ Future<List<MediaPreview>> ensureMediaPreviews(
   for (final file in media) {
     try {
       final video = isVideo(file.path);
+      final pdf = isPdf(file.path);
       final thumb = File('${thumbs.path}/${basename(file.path)}');
       if (!await thumb.exists()) {
         if (video) {
           await createVideoThumb(file, thumb);
+        } else if (pdf) {
+          await createPdfThumb(file, thumb);
         } else {
           await createImageThumb(file, thumb);
         }
@@ -1009,15 +1087,19 @@ Future<List<MediaPreview>> ensureMediaPreviews(
       final hasThumb = await thumb.exists();
       final metadata = video
           ? await readVideoMetadata(file)
+          : pdf
+          ? await readPdfMetadata(file)
           : await readImageMetadata(file);
       result.add(
         MediaPreview(
           sourcePath: file.path,
           isVideo: video,
+          isPdf: pdf,
           thumbPath: hasThumb ? thumb.path : null,
           width: metadata.width,
           height: metadata.height,
           duration: metadata.duration,
+          pageCount: metadata.pageCount,
         ),
       );
     } catch (_) {
@@ -1025,6 +1107,30 @@ Future<List<MediaPreview>> ensureMediaPreviews(
     }
   }
   return result;
+}
+
+Future<void> createPdfThumb(File source, File target) async {
+  PdfDocument? document;
+  PdfPage? page;
+  try {
+    document = await PdfDocument.openFile(source.path);
+    if (document.pagesCount < 1) return;
+    page = await document.getPage(1);
+    final scale = 320 / page.width;
+    final pageImage = await page.render(
+      width: 320,
+      height: page.height * scale,
+      format: PdfPageImageFormat.png,
+      backgroundColor: '#FFFFFF',
+    );
+    if (pageImage == null) return;
+    await target.writeAsBytes(pageImage.bytes, flush: true);
+  } catch (_) {
+    if (await target.exists()) await target.delete();
+  } finally {
+    await page?.close();
+    await document?.close();
+  }
 }
 
 Future<void> createVideoThumb(File source, File target) async {
@@ -1074,12 +1180,33 @@ Future<MediaMetadata> readVideoMetadata(File file) async {
   }
 }
 
+Future<MediaMetadata> readPdfMetadata(File file) async {
+  PdfDocument? document;
+  PdfPage? page;
+  try {
+    document = await PdfDocument.openFile(file.path);
+    if (document.pagesCount < 1) {
+      return MediaMetadata(pageCount: document.pagesCount);
+    }
+    page = await document.getPage(1);
+    return MediaMetadata(
+      width: page.width.round(),
+      height: page.height.round(),
+      pageCount: document.pagesCount,
+    );
+  } finally {
+    await page?.close();
+    await document?.close();
+  }
+}
+
 class MediaMetadata {
   final int? width;
   final int? height;
   final Duration? duration;
+  final int? pageCount;
 
-  const MediaMetadata({this.width, this.height, this.duration});
+  const MediaMetadata({this.width, this.height, this.duration, this.pageCount});
 }
 
 String imageSubtitle(MediaPreview? preview) {
@@ -1095,6 +1222,18 @@ String videoSubtitle(MediaPreview? preview) {
       ? null
       : formatDuration(preview!.duration!);
   return ['Video', ?duration, ?size].join(' ');
+}
+
+String pdfSubtitle(MediaPreview? preview) {
+  final pages = preview?.pageCount;
+  final size = preview?.width == null || preview?.height == null
+      ? null
+      : '${preview!.width}x${preview.height}';
+  return [
+    'PDF',
+    if (pages != null) '$pages page${pages == 1 ? '' : 's'}',
+    ?size,
+  ].join(' ');
 }
 
 String formatDuration(Duration duration) {
@@ -1154,7 +1293,7 @@ String uploadPage(String path) =>
 <h3>Upload to phone</h3>
 <p>Directory: ${htmlEscape.convert(path)}</p>
 <form method="post" action="/upload" enctype="multipart/form-data">
-<input type="file" name="files" multiple accept="image/*,video/*"><br><br>
+<input type="file" name="files" multiple accept="image/*,video/*,application/pdf,.pdf"><br><br>
 <button type="submit">Upload</button>
 </form>
 </body>
@@ -1301,6 +1440,10 @@ bool isVideo(String path) {
       p.endsWith('.mkv') ||
       p.endsWith('.avi');
 }
+
+bool isPdf(String path) => path.toLowerCase().endsWith('.pdf');
+
+bool isMediaFile(String path) => isImage(path) || isVideo(path) || isPdf(path);
 
 Future<String?> getLocalIp() async {
   final interfaces = await NetworkInterface.list(
