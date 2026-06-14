@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -37,10 +39,12 @@ class _HomePageState extends State<HomePage> {
   Directory? rootDir;
   Directory? currentDir;
   List<FileSystemEntity> entries = [];
+  final Map<String, MediaPreview> previews = <String, MediaPreview>{};
   final Set<String> selected = <String>{};
   HttpServer? server;
   String? serverUrl;
   bool loading = true;
+  bool refreshingThumbs = false;
 
   @override
   void initState() {
@@ -66,18 +70,38 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final dir = currentDir;
     if (dir == null) return;
-    final list = await dir.list().toList();
+    final list = (await dir.list().toList())
+        .where((e) => basename(e.path) != thumbsDirName)
+        .toList();
     list.sort((a, b) {
       final ad = a is Directory ? 0 : 1;
       final bd = b is Directory ? 0 : 1;
       if (ad != bd) return ad.compareTo(bd);
       return a.path.toLowerCase().compareTo(b.path.toLowerCase());
     });
+    final generated = await ensureMediaPreviews(dir, list.whereType<File>());
+    if (!mounted) return;
     selected.removeWhere((p) => !list.any((e) => e.path == p));
     setState(() {
       entries = list;
+      previews
+        ..clear()
+        ..addEntries(generated.map((p) => MapEntry(p.sourcePath, p)));
       loading = false;
     });
+  }
+
+  Future<void> _rebuildThumbs() async {
+    final dir = currentDir;
+    if (dir == null || refreshingThumbs) return;
+    setState(() => refreshingThumbs = true);
+    try {
+      final thumbs = Directory('${dir.path}/$thumbsDirName');
+      if (await thumbs.exists()) await thumbs.delete(recursive: true);
+      await _refresh();
+    } finally {
+      if (mounted) setState(() => refreshingThumbs = false);
+    }
   }
 
   List<File> get mediaFiles => entries
@@ -141,6 +165,10 @@ class _HomePageState extends State<HomePage> {
       if (type == FileSystemEntityType.directory) {
         await Directory(p).delete(recursive: true);
       } else if (type == FileSystemEntityType.file) {
+        final thumb = File(
+          '${File(p).parent.path}/$thumbsDirName/${basename(p)}',
+        );
+        if (await thumb.exists()) await thumb.delete();
         await File(p).delete();
       }
     }
@@ -218,6 +246,17 @@ class _HomePageState extends State<HomePage> {
         actions: [
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
           IconButton(
+            tooltip: 'Rebuild thumbnails',
+            onPressed: refreshingThumbs ? null : _rebuildThumbs,
+            icon: refreshingThumbs
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.photo_size_select_actual),
+          ),
+          IconButton(
             onPressed: _createDirectory,
             icon: const Icon(Icons.create_new_folder),
           ),
@@ -271,15 +310,33 @@ class _HomePageState extends State<HomePage> {
                             final isMedia =
                                 e is File &&
                                 (isImage(e.path) || isVideo(e.path));
+                            final preview = previews[e.path];
                             final checked = selected.contains(e.path);
                             return ListTile(
-                              leading: Checkbox(
-                                value: checked,
-                                onChanged: (_) => setState(() {
-                                  checked
-                                      ? selected.remove(e.path)
-                                      : selected.add(e.path);
-                                }),
+                              leading: SizedBox(
+                                width: 96,
+                                height: 56,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Checkbox(
+                                      value: checked,
+                                      onChanged: (_) => setState(() {
+                                        checked
+                                            ? selected.remove(e.path)
+                                            : selected.add(e.path);
+                                      }),
+                                    ),
+                                    if (isMedia)
+                                      MediaPreviewTile(preview: preview)
+                                    else
+                                      Icon(
+                                        isDir
+                                            ? Icons.folder
+                                            : Icons.insert_drive_file,
+                                      ),
+                                  ],
+                                ),
                               ),
                               title: Text(
                                 name,
@@ -290,9 +347,9 @@ class _HomePageState extends State<HomePage> {
                                 isDir
                                     ? 'Directory'
                                     : isVideo(e.path)
-                                    ? 'Video'
+                                    ? videoSubtitle(preview)
                                     : isImage(e.path)
-                                    ? 'Photo'
+                                    ? imageSubtitle(preview)
                                     : 'File',
                               ),
                               trailing: IconButton(
@@ -457,8 +514,9 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
   @override
   Widget build(BuildContext context) {
     final vc = c;
-    if (!ready || vc == null)
+    if (!ready || vc == null) {
       return const Center(child: CircularProgressIndicator());
+    }
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -492,6 +550,164 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
       ),
     );
   }
+}
+
+const thumbsDirName = '.thumbs';
+
+class MediaPreview {
+  final String sourcePath;
+  final String thumbPath;
+  final int? width;
+  final int? height;
+  final Duration? duration;
+
+  const MediaPreview({
+    required this.sourcePath,
+    required this.thumbPath,
+    this.width,
+    this.height,
+    this.duration,
+  });
+}
+
+class MediaPreviewTile extends StatelessWidget {
+  final MediaPreview? preview;
+
+  const MediaPreviewTile({super.key, required this.preview});
+
+  @override
+  Widget build(BuildContext context) {
+    final p = preview;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: Container(
+        width: 40,
+        height: 40,
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: p == null
+            ? const Icon(Icons.image, size: 20)
+            : Image.file(
+                File(p.thumbPath),
+                fit: BoxFit.cover,
+                errorBuilder: (_, _, _) => const Icon(Icons.broken_image),
+              ),
+      ),
+    );
+  }
+}
+
+Future<List<MediaPreview>> ensureMediaPreviews(
+  Directory dir,
+  Iterable<File> files,
+) async {
+  final media = files.where((f) => isImage(f.path) || isVideo(f.path)).toList();
+  if (media.isEmpty) return const <MediaPreview>[];
+
+  final thumbs = Directory('${dir.path}/$thumbsDirName');
+  if (!await thumbs.exists()) await thumbs.create(recursive: true);
+
+  final result = <MediaPreview>[];
+  for (final file in media) {
+    try {
+      final thumb = File('${thumbs.path}/${basename(file.path)}');
+      if (!await thumb.exists()) {
+        if (isVideo(file.path)) {
+          await createVideoThumb(file, thumb);
+        } else {
+          await createImageThumb(file, thumb);
+        }
+      }
+      final metadata = isVideo(file.path)
+          ? await readVideoMetadata(file)
+          : await readImageMetadata(file);
+      result.add(
+        MediaPreview(
+          sourcePath: file.path,
+          thumbPath: thumb.path,
+          width: metadata.width,
+          height: metadata.height,
+          duration: metadata.duration,
+        ),
+      );
+    } catch (_) {
+      continue;
+    }
+  }
+  return result;
+}
+
+Future<void> createVideoThumb(File source, File target) async {
+  final bytes = await VideoThumbnail.thumbnailData(
+    video: source.path,
+    imageFormat: ImageFormat.JPEG,
+    maxWidth: 320,
+    quality: 75,
+  );
+  if (bytes == null || bytes.isEmpty) return;
+  await target.writeAsBytes(bytes, flush: true);
+}
+
+Future<void> createImageThumb(File source, File target) async {
+  final bytes = await source.readAsBytes();
+  final codec = await ui.instantiateImageCodec(bytes, targetWidth: 320);
+  final frame = await codec.getNextFrame();
+  final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+  if (data == null) return;
+  await target.writeAsBytes(data.buffer.asUint8List(), flush: true);
+}
+
+Future<MediaMetadata> readImageMetadata(File file) async {
+  final bytes = await file.readAsBytes();
+  final codec = await ui.instantiateImageCodec(bytes);
+  final frame = await codec.getNextFrame();
+  return MediaMetadata(width: frame.image.width, height: frame.image.height);
+}
+
+Future<MediaMetadata> readVideoMetadata(File file) async {
+  final controller = VideoPlayerController.file(file);
+  try {
+    await controller.initialize();
+    final value = controller.value;
+    return MediaMetadata(
+      width: value.size.width.round(),
+      height: value.size.height.round(),
+      duration: value.duration,
+    );
+  } finally {
+    await controller.dispose();
+  }
+}
+
+class MediaMetadata {
+  final int? width;
+  final int? height;
+  final Duration? duration;
+
+  const MediaMetadata({this.width, this.height, this.duration});
+}
+
+String imageSubtitle(MediaPreview? preview) {
+  if (preview?.width == null || preview?.height == null) return 'Photo';
+  return 'Photo ${preview!.width}x${preview.height}';
+}
+
+String videoSubtitle(MediaPreview? preview) {
+  final size = preview?.width == null || preview?.height == null
+      ? null
+      : '${preview!.width}x${preview.height}';
+  final duration = preview?.duration == null
+      ? null
+      : formatDuration(preview!.duration!);
+  return ['Video', ?duration, ?size].join(' ');
+}
+
+String formatDuration(Duration duration) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  final seconds = duration.inSeconds.remainder(60);
+  if (hours > 0) return '$hours:${two(minutes)}:${two(seconds)}';
+  return '$minutes:${two(seconds)}';
 }
 
 Future<void> handleHttpRequest(
@@ -680,7 +896,8 @@ Future<String?> getLocalIp() async {
       }
     }
   }
-  if (interfaces.isNotEmpty && interfaces.first.addresses.isNotEmpty)
+  if (interfaces.isNotEmpty && interfaces.first.addresses.isNotEmpty) {
     return interfaces.first.addresses.first.address;
+  }
   return null;
 }
