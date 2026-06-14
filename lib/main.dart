@@ -16,6 +16,8 @@ void main() {
 
 final videoThumbnailer = FcNativeVideoThumbnail();
 
+enum GalleryViewMode { list, cards }
+
 class GalleryServerApp extends StatelessWidget {
   const GalleryServerApp({super.key});
 
@@ -49,6 +51,7 @@ class _HomePageState extends State<HomePage> {
   String? serverUrl;
   bool loading = true;
   bool refreshingThumbs = false;
+  GalleryViewMode viewMode = GalleryViewMode.list;
   int directoryLoadRequest = 0;
 
   @override
@@ -68,7 +71,75 @@ class _HomePageState extends State<HomePage> {
     final root = Directory('${docs.path}/vault');
     if (!await root.exists()) await root.create(recursive: true);
     rootDir = root;
+    await _loadViewMode(docs);
+    await _loadDirectoryCache(docs);
     await _openDirectory(root);
+  }
+
+  Future<void> _loadViewMode(Directory docs) async {
+    final file = File('${docs.path}/gallery_settings.json');
+    if (!await file.exists()) return;
+    try {
+      final data = jsonDecode(await file.readAsString());
+      viewMode = data['viewMode'] == 'cards'
+          ? GalleryViewMode.cards
+          : GalleryViewMode.list;
+    } catch (_) {}
+  }
+
+  Future<void> _saveViewMode() async {
+    final docs = await getApplicationDocumentsDirectory();
+    final file = File('${docs.path}/gallery_settings.json');
+    await file.writeAsString(jsonEncode({'viewMode': viewMode.name}));
+  }
+
+  Future<void> _loadDirectoryCache(Directory docs) async {
+    final file = File('${docs.path}/gallery_cache.json');
+    if (!await file.exists()) return;
+    try {
+      final data = jsonDecode(await file.readAsString());
+      final dirs = data['directories'];
+      if (dirs is! Map) return;
+      directoryCache
+        ..clear()
+        ..addEntries(
+          dirs.entries
+              .where((entry) => entry.key is String && entry.value is Map)
+              .map(
+                (entry) => MapEntry(
+                  entry.key as String,
+                  DirectoryCacheEntry.fromJson(
+                    Map<String, dynamic>.from(entry.value as Map),
+                  ),
+                ),
+              ),
+        );
+    } catch (_) {}
+  }
+
+  Future<void> _saveDirectoryCache() async {
+    final docs = await getApplicationDocumentsDirectory();
+    final file = File('${docs.path}/gallery_cache.json');
+    final data = {
+      'directories': {
+        for (final entry in directoryCache.entries)
+          entry.key: entry.value.toJson(),
+      },
+    };
+    await file.writeAsString(jsonEncode(data));
+  }
+
+  void _persistDirectoryCache() {
+    unawaited(_saveDirectoryCache());
+  }
+
+  void _toggleViewMode() {
+    setState(() {
+      viewMode = viewMode == GalleryViewMode.list
+          ? GalleryViewMode.cards
+          : GalleryViewMode.list;
+    });
+    unawaited(_saveViewMode());
   }
 
   Future<void> _refresh() async {
@@ -113,6 +184,7 @@ class _HomePageState extends State<HomePage> {
       previews: scannedPreviews,
     );
     directoryCache[dir.path] = cache;
+    _persistDirectoryCache();
     _showDirectoryCache(cache);
   }
 
@@ -135,6 +207,7 @@ class _HomePageState extends State<HomePage> {
       final thumbs = Directory('${dir.path}/$thumbsDirName');
       if (await thumbs.exists()) await thumbs.delete(recursive: true);
       directoryCache.remove(dir.path);
+      _persistDirectoryCache();
       await _openDirectory(dir, force: true);
     } finally {
       if (mounted) setState(() => refreshingThumbs = false);
@@ -154,6 +227,7 @@ class _HomePageState extends State<HomePage> {
     cache.entries.removeWhere((e) => paths.contains(e.path));
     cache.entries.addAll(newEntries);
     sortEntries(cache.entries);
+    _persistDirectoryCache();
     if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
   }
 
@@ -169,6 +243,7 @@ class _HomePageState extends State<HomePage> {
     for (final preview in generated) {
       cache.previews[preview.sourcePath] = preview;
     }
+    _persistDirectoryCache();
     if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
   }
 
@@ -191,6 +266,7 @@ class _HomePageState extends State<HomePage> {
     for (final path in deleted) {
       cache.previews.remove(path);
     }
+    _persistDirectoryCache();
     if (currentDir?.path == dir.path && mounted) _showDirectoryCache(cache);
   }
 
@@ -199,6 +275,7 @@ class _HomePageState extends State<HomePage> {
     directoryCache.removeWhere(
       (path, _) => path == deletedPath || path.startsWith(prefix),
     );
+    _persistDirectoryCache();
   }
 
   Future<void> _createDirectory() async {
@@ -336,6 +413,36 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  void _toggleSelected(String path) {
+    setState(() {
+      selected.contains(path) ? selected.remove(path) : selected.add(path);
+    });
+  }
+
+  Future<void> _openEntry(FileSystemEntity e) async {
+    final isDir = e is Directory;
+    final isMedia = e is File && (isImage(e.path) || isVideo(e.path));
+    final checked = selected.contains(e.path);
+    if (selected.isNotEmpty) {
+      _toggleSelected(e.path);
+      return;
+    }
+    if (isDir) {
+      await _openDirectory(e);
+    } else if (isMedia) {
+      _openViewer(e);
+    } else if (checked) {
+      _toggleSelected(e.path);
+    }
+  }
+
+  String _entrySubtitle(FileSystemEntity e, MediaPreview? preview) {
+    if (e is Directory) return 'Directory';
+    if (isVideo(e.path)) return videoSubtitle(preview);
+    if (isImage(e.path)) return imageSubtitle(preview);
+    return 'File';
+  }
+
   @override
   Widget build(BuildContext context) {
     final dir = currentDir;
@@ -346,6 +453,17 @@ class _HomePageState extends State<HomePage> {
         ),
         actions: [
           IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh)),
+          IconButton(
+            tooltip: viewMode == GalleryViewMode.list
+                ? 'Card view'
+                : 'List view',
+            onPressed: _toggleViewMode,
+            icon: Icon(
+              viewMode == GalleryViewMode.list
+                  ? Icons.grid_view
+                  : Icons.view_list,
+            ),
+          ),
           IconButton(
             tooltip: 'Rebuild thumbnails',
             onPressed: refreshingThumbs ? null : _rebuildThumbs,
@@ -402,82 +520,119 @@ class _HomePageState extends State<HomePage> {
                 Expanded(
                   child: entries.isEmpty
                       ? const Center(child: Text('Empty'))
-                      : ListView.builder(
-                          itemCount: entries.length,
-                          itemBuilder: (context, i) {
-                            final e = entries[i];
-                            final name = basename(e.path);
-                            final isDir = e is Directory;
-                            final isMedia =
-                                e is File &&
-                                (isImage(e.path) || isVideo(e.path));
-                            final preview = previews[e.path];
-                            final checked = selected.contains(e.path);
-                            return ListTile(
-                              leading: SizedBox(
-                                width: 96,
-                                height: 56,
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Checkbox(
-                                      value: checked,
-                                      onChanged: (_) => setState(() {
-                                        checked
-                                            ? selected.remove(e.path)
-                                            : selected.add(e.path);
-                                      }),
-                                    ),
-                                    if (isMedia)
-                                      MediaPreviewTile(preview: preview)
-                                    else
-                                      Icon(
-                                        isDir
-                                            ? Icons.folder
-                                            : Icons.insert_drive_file,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              title: Text(
-                                name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                isDir
-                                    ? 'Directory'
-                                    : isVideo(e.path)
-                                    ? videoSubtitle(preview)
-                                    : isImage(e.path)
-                                    ? imageSubtitle(preview)
-                                    : 'File',
-                              ),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () => _deletePaths([e.path]),
-                              ),
-                              onTap: () async {
-                                if (selected.isNotEmpty) {
-                                  setState(
-                                    () => checked
-                                        ? selected.remove(e.path)
-                                        : selected.add(e.path),
-                                  );
-                                  return;
-                                }
-                                if (isDir) {
-                                  await _openDirectory(e);
-                                } else if (isMedia) {
-                                  _openViewer(e);
-                                }
-                              },
-                            );
-                          },
-                        ),
+                      : viewMode == GalleryViewMode.list
+                      ? _buildListView()
+                      : _buildCardView(),
                 ),
               ],
             ),
+    );
+  }
+
+  Widget _buildListView() {
+    return ListView.builder(
+      itemCount: entries.length,
+      itemBuilder: (context, i) {
+        final e = entries[i];
+        final name = basename(e.path);
+        final isDir = e is Directory;
+        final isMedia = e is File && (isImage(e.path) || isVideo(e.path));
+        final preview = previews[e.path];
+        final checked = selected.contains(e.path);
+        return ListTile(
+          leading: SizedBox(
+            width: 96,
+            height: 56,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Checkbox(
+                  value: checked,
+                  onChanged: (_) => _toggleSelected(e.path),
+                ),
+                if (isMedia)
+                  MediaPreviewTile(preview: preview)
+                else
+                  Icon(isDir ? Icons.folder : Icons.insert_drive_file),
+              ],
+            ),
+          ),
+          title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: Text(_entrySubtitle(e, preview)),
+          trailing: IconButton(
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => _deletePaths([e.path]),
+          ),
+          onTap: () => unawaited(_openEntry(e)),
+        );
+      },
+    );
+  }
+
+  Widget _buildCardView() {
+    final dirs = entries.whereType<Directory>().toList();
+    final files = entries.whereType<File>().toList();
+    return CustomScrollView(
+      slivers: [
+        if (dirs.isNotEmpty)
+          SliverList.builder(
+            itemCount: dirs.length,
+            itemBuilder: (context, i) {
+              final e = dirs[i];
+              final name = basename(e.path);
+              final checked = selected.contains(e.path);
+              return ListTile(
+                leading: const Icon(Icons.folder),
+                title: Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                selected: checked,
+                onLongPress: () => _toggleSelected(e.path),
+                onTap: () => unawaited(_openEntry(e)),
+              );
+            },
+          ),
+        SliverPadding(
+          padding: const EdgeInsets.all(8),
+          sliver: SliverGrid.builder(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 108,
+              mainAxisExtent: 108,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+            ),
+            itemCount: files.length,
+            itemBuilder: (context, i) {
+              final e = files[i];
+              final isMedia = isImage(e.path) || isVideo(e.path);
+              final preview = previews[e.path];
+              final checked = selected.contains(e.path);
+              final colorScheme = Theme.of(context).colorScheme;
+              return InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => unawaited(_openEntry(e)),
+                onLongPress: () => _toggleSelected(e.path),
+                child: Card(
+                  color: checked ? colorScheme.primaryContainer : null,
+                  margin: EdgeInsets.zero,
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Center(
+                      child: isMedia
+                          ? MediaPreviewTile(preview: preview, size: 76)
+                          : Icon(
+                              Icons.insert_drive_file,
+                              size: 56,
+                              color: checked
+                                  ? colorScheme.onPrimaryContainer
+                                  : null,
+                            ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -711,6 +866,33 @@ class DirectoryCacheEntry {
     required Map<String, MediaPreview> previews,
   }) : entries = List<FileSystemEntity>.of(entries),
        previews = Map<String, MediaPreview>.of(previews);
+
+  factory DirectoryCacheEntry.fromJson(Map<String, dynamic> json) {
+    final rawEntries = json['entries'];
+    final rawPreviews = json['previews'];
+    return DirectoryCacheEntry(
+      entries: rawEntries is List
+          ? rawEntries
+                .whereType<Map>()
+                .map((e) => fileSystemEntityFromJson(Map.from(e)))
+                .whereType<FileSystemEntity>()
+                .toList()
+          : const <FileSystemEntity>[],
+      previews: rawPreviews is Map
+          ? rawPreviews.map(
+              (key, value) => MapEntry(
+                key.toString(),
+                MediaPreview.fromJson(Map<String, dynamic>.from(value as Map)),
+              ),
+            )
+          : const <String, MediaPreview>{},
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'entries': entries.map(fileSystemEntityToJson).toList(),
+    'previews': previews.map((key, value) => MapEntry(key, value.toJson())),
+  };
 }
 
 class MediaPreview {
@@ -729,12 +911,33 @@ class MediaPreview {
     this.height,
     this.duration,
   });
+
+  factory MediaPreview.fromJson(Map<String, dynamic> json) => MediaPreview(
+    sourcePath: json['sourcePath']?.toString() ?? '',
+    isVideo: json['isVideo'] == true,
+    thumbPath: json['thumbPath']?.toString(),
+    width: json['width'] is int ? json['width'] as int : null,
+    height: json['height'] is int ? json['height'] as int : null,
+    duration: json['durationMs'] is int
+        ? Duration(milliseconds: json['durationMs'] as int)
+        : null,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'sourcePath': sourcePath,
+    'thumbPath': thumbPath,
+    'isVideo': isVideo,
+    'width': width,
+    'height': height,
+    'durationMs': duration?.inMilliseconds,
+  };
 }
 
 class MediaPreviewTile extends StatelessWidget {
   final MediaPreview? preview;
+  final double size;
 
-  const MediaPreviewTile({super.key, required this.preview});
+  const MediaPreviewTile({super.key, required this.preview, this.size = 40});
 
   @override
   Widget build(BuildContext context) {
@@ -743,8 +946,8 @@ class MediaPreviewTile extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Container(
-        width: 40,
-        height: 40,
+        width: size,
+        height: size,
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
         child: p == null
             ? const Icon(Icons.image, size: 20)
@@ -1040,6 +1243,20 @@ void sortEntries(List<FileSystemEntity> entries) {
     if (ad != bd) return ad.compareTo(bd);
     return a.path.toLowerCase().compareTo(b.path.toLowerCase());
   });
+}
+
+Map<String, dynamic> fileSystemEntityToJson(FileSystemEntity entity) => {
+  'path': entity.path,
+  'type': entity is Directory ? 'directory' : 'file',
+};
+
+FileSystemEntity? fileSystemEntityFromJson(Map<dynamic, dynamic> json) {
+  final path = json['path']?.toString();
+  final type = json['type']?.toString();
+  if (path == null || path.isEmpty) return null;
+  if (type == 'directory') return Directory(path);
+  if (type == 'file') return File(path);
+  return null;
 }
 
 String sanitizeFileName(String name) {
