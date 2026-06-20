@@ -559,13 +559,13 @@ class _HomePageState extends State<HomePage> {
             },
           ),
         SliverPadding(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(4),
           sliver: SliverGrid.builder(
             gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 108,
-              mainAxisExtent: 108,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
+              maxCrossAxisExtent: 120,
+              mainAxisExtent: 120,
+              crossAxisSpacing: 4,
+              mainAxisSpacing: 4,
             ),
             itemCount: files.length,
             itemBuilder: (context, i) {
@@ -582,18 +582,21 @@ class _HomePageState extends State<HomePage> {
                   color: checked ? colorScheme.primaryContainer : null,
                   margin: EdgeInsets.zero,
                   child: Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: Center(
-                      child: isMedia
-                          ? MediaPreviewTile(preview: preview, size: 76)
-                          : Icon(
+                    padding: const EdgeInsets.all(2),
+                    child: isMedia
+                        ? MediaPreviewTile(
+                            preview: preview,
+                            size: double.infinity,
+                          )
+                        : Center(
+                            child: Icon(
                               Icons.insert_drive_file,
                               size: 56,
                               color: checked
                                   ? colorScheme.onPrimaryContainer
                                   : null,
                             ),
-                    ),
+                          ),
                   ),
                 ),
               );
