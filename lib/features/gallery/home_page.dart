@@ -113,6 +113,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final dir = currentDir;
     if (dir == null) return;
+    await repairLegacyUtf8FileNames(dir);
     directoryCache.remove(dir.path);
     await _openDirectory(dir, force: true);
   }

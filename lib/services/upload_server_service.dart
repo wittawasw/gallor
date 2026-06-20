@@ -43,7 +43,7 @@ String uploadPage(String path) =>
     '''
 <!doctype html>
 <html>
-<head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Upload</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Upload</title></head>
 <body style="font-family:sans-serif;padding:24px">
 <h3>Upload to phone</h3>
 <p>Directory: ${htmlEscape.convert(path)}</p>
@@ -80,8 +80,7 @@ Future<List<File>> parseAndSaveMultipart(
       part.sublist(0, headerEnd),
       allowInvalid: true,
     );
-    final filenameMatch = RegExp(r'filename="([^"]*)"').firstMatch(header);
-    final rawName = filenameMatch?.group(1);
+    final rawName = multipartFileName(header);
     if (rawName == null || rawName.isEmpty) continue;
 
     var data = part.sublist(headerEnd + 4);
@@ -97,6 +96,30 @@ Future<List<File>> parseAndSaveMultipart(
     saved.add(file);
   }
   return saved;
+}
+
+String? multipartFileName(String header) {
+  final encodedMatch = RegExp(
+    r"filename\*=UTF-8''([^;\r\n]+)",
+    caseSensitive: false,
+  ).firstMatch(header);
+  if (encodedMatch != null) {
+    try {
+      return Uri.decodeComponent(encodedMatch.group(1)!);
+    } on FormatException {
+      // Fall back to the regular filename parameter.
+    }
+  }
+
+  final filenameMatch = RegExp(r'filename="([^"]*)"').firstMatch(header);
+  final filename = filenameMatch?.group(1);
+  if (filename == null) return null;
+
+  try {
+    return utf8.decode(filename.codeUnits);
+  } on FormatException {
+    return filename;
+  }
 }
 
 List<Uint8List> splitBytes(Uint8List data, List<int> marker) {
