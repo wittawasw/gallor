@@ -71,5 +71,19 @@ void main() {
       formatDuration(const Duration(hours: 1, minutes: 2, seconds: 3)),
       '1:02:03',
     );
+    expect(
+      formatPlaybackTime(
+        const Duration(minutes: 3, seconds: 7),
+        showHours: false,
+      ),
+      '03:07',
+    );
+    expect(
+      formatPlaybackTime(
+        const Duration(minutes: 3, seconds: 7),
+        showHours: true,
+      ),
+      '00:03:07',
+    );
   });
 }

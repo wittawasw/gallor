@@ -73,6 +73,39 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _seekBy(Duration offset) async {
+    final vc = c;
+    if (!ready || vc == null) return;
+    final duration = vc.value.duration;
+    final target = vc.value.position + offset;
+    await vc.seekTo(
+      target < Duration.zero
+          ? Duration.zero
+          : target > duration
+          ? duration
+          : target,
+    );
+  }
+
+  Widget _seekButton({
+    required Duration offset,
+    required IconData icon,
+    required String label,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          color: Colors.white,
+          icon: Icon(icon),
+          tooltip: label,
+          onPressed: () => _seekBy(offset),
+        ),
+        Text(label, style: const TextStyle(color: Colors.white)),
+      ],
+    );
+  }
+
   @override
   void dispose() {
     loadToken++;
@@ -100,6 +133,11 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
     if (!ready || vc == null) {
       return const Center(child: CircularProgressIndicator());
     }
+    final duration = vc.value.duration;
+    final showHours = duration.inHours > 0;
+    final position = vc.value.position > duration
+        ? duration
+        : vc.value.position;
     return SafeArea(
       child: Column(
         children: [
@@ -123,6 +161,16 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              _seekButton(
+                offset: const Duration(minutes: -1),
+                icon: Icons.keyboard_double_arrow_left,
+                label: '-1m',
+              ),
+              _seekButton(
+                offset: const Duration(seconds: -10),
+                icon: Icons.replay_10,
+                label: '-10s',
+              ),
               IconButton(
                 color: Colors.white,
                 iconSize: 48,
@@ -131,7 +179,25 @@ class _VideoFilePlayerState extends State<VideoFilePlayer> {
                 ),
                 onPressed: _togglePlayback,
               ),
+              _seekButton(
+                offset: const Duration(seconds: 10),
+                icon: Icons.forward_10,
+                label: '+10s',
+              ),
+              _seekButton(
+                offset: const Duration(minutes: 1),
+                icon: Icons.keyboard_double_arrow_right,
+                label: '+1m',
+              ),
             ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              '${formatPlaybackTime(position, showHours: showHours)} / '
+              '${formatPlaybackTime(duration, showHours: showHours)}',
+              style: const TextStyle(color: Colors.white),
+            ),
           ),
         ],
       ),

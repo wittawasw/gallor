@@ -35,3 +35,12 @@ String formatDuration(Duration duration) {
   if (hours > 0) return '$hours:${two(minutes)}:${two(seconds)}';
   return '$minutes:${two(seconds)}';
 }
+
+String formatPlaybackTime(Duration duration, {required bool showHours}) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  final hours = duration.inHours;
+  final minutes = duration.inMinutes.remainder(60);
+  final seconds = duration.inSeconds.remainder(60);
+  if (showHours) return '${two(hours)}:${two(minutes)}:${two(seconds)}';
+  return '${two(minutes)}:${two(seconds)}';
+}
